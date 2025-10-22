@@ -5,6 +5,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/metadata"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 type Context struct {
@@ -57,6 +61,20 @@ func (c *Context) WithValue(key, val any) *Context {
 
 func (c *Context) WithCancel() (*Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(c.Context)
+	return NewContext(ctx), cancel
+}
+
+func (c *Context) WithTimeout(d time.Duration) (*Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(c.Context, d)
+	return NewContext(ctx), cancel
+}
+
+func (c *Context) WithSignalNotify() (*Context, context.CancelFunc) {
+	signals := []os.Signal{
+		syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP,
+		syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL,
+	}
+	ctx, cancel := signal.NotifyContext(c, signals...)
 	return NewContext(ctx), cancel
 }
 
