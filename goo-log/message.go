@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -51,4 +52,55 @@ func (msg *Message) JSON() []byte {
 	}
 
 	return buf
+}
+
+// Text 返回控制台格式的文本
+func (msg *Message) Text() string {
+	var buf strings.Builder
+
+	// 时间
+	buf.WriteString(msg.Time.Format("2006-01-02 15:04:05"))
+	buf.WriteString(" ")
+
+	// 级别（带颜色）
+	levelText := LevelText[msg.Level]
+	if color := Color(msg.Level); color != nil {
+		levelText = color(levelText)
+	}
+	buf.WriteString(fmt.Sprintf("[%s]", levelText))
+	buf.WriteString(" ")
+
+	// 标签
+	if len(msg.Entry.Tags) > 0 {
+		buf.WriteString(fmt.Sprintf("[%s] ", strings.Join(msg.Entry.Tags, ",")))
+	}
+
+	// 消息
+	if len(msg.Message) > 0 {
+		for i, m := range msg.Message {
+			if i > 0 {
+				buf.WriteString(" ")
+			}
+			buf.WriteString(fmt.Sprint(m))
+		}
+	}
+
+	// 字段
+	if len(msg.Entry.Data) > 0 {
+		buf.WriteString(" | ")
+		var fields []string
+		for _, field := range msg.Entry.Data {
+			fields = append(fields, fmt.Sprintf("%s=%v", field.Field, field.Value))
+		}
+		buf.WriteString(strings.Join(fields, " "))
+	}
+
+	// 追踪信息
+	if len(msg.Entry.Trace) > 0 {
+		buf.WriteString("\n")
+		buf.WriteString("Trace: ")
+		buf.WriteString(strings.Join(msg.Entry.Trace, " -> "))
+	}
+
+	return buf.String()
 }

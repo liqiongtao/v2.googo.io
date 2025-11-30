@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	goocontext "v2.googo.io/goo-context"
 )
 
 type Entry struct {
@@ -23,18 +25,45 @@ type DataField struct {
 }
 
 func NewEntry(l *Logger) *Entry {
-	return &Entry{l: l}
+	return &Entry{
+		Tags:  make([]string, 0, 4),
+		Data:  make([]DataField, 0, 4),
+		Trace: make([]string, 0, 8),
+		l:     l,
+	}
 }
 
-func (entry *Entry) WithTag(tags ...string) *Entry {
+func (entry *Entry) WithTag(tags ...any) *Entry {
 	if len(tags) > 0 {
-		entry.Tags = append(entry.Tags, tags...)
+		for _, tag := range tags {
+			entry.Tags = append(entry.Tags, fmt.Sprint(tag))
+		}
 	}
 	return entry
 }
 
 func (entry *Entry) WithField(field string, value any) *Entry {
 	entry.Data = append(entry.Data, DataField{Field: field, Value: value})
+	return entry
+}
+
+func (entry *Entry) WithFieldF(field string, format string, args ...any) *Entry {
+	value := fmt.Sprintf(format, args...)
+	entry.Data = append(entry.Data, DataField{Field: field, Value: value})
+	return entry
+}
+
+func (entry *Entry) WithContext(ctx *goocontext.Context) *Entry {
+	if ctx != nil {
+		appName := goocontext.AppName(ctx)
+		if appName != "" {
+			entry.Data = append(entry.Data, DataField{Field: "app-name", Value: appName})
+		}
+		traceId := goocontext.TraceId(ctx)
+		if traceId != "" {
+			entry.Data = append(entry.Data, DataField{Field: "trace-id", Value: traceId})
+		}
+	}
 	return entry
 }
 
@@ -101,8 +130,11 @@ func (entry *Entry) output(level Level, v ...any) {
 		Entry:   entry,
 	}
 
-	if level >= WARN {
-		entry.WithTrace()
+	// 如果级别达到设置的追踪级别，或者已经手动设置了追踪信息，则添加追踪
+	if level >= entry.l.traceLevel || len(entry.Trace) > 0 {
+		if len(entry.Trace) == 0 {
+			entry.WithTrace()
+		}
 	}
 
 	for _, fn := range entry.l.hooks {
@@ -111,7 +143,6 @@ func (entry *Entry) output(level Level, v ...any) {
 
 	if entry.l.adapter != nil {
 		entry.l.adapter.Write(entry.msg)
-		entry.Trace = []string{}
 	}
 }
 

@@ -39,3 +39,8 @@ func newBrush(color string) brush {
 		return pre + color + "m" + text + reset
 	}
 }
+
+// Color 获取日志级别的颜色函数
+func Color(level Level) brush {
+	return colors[level]
+}
