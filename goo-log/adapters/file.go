@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ type FileAdapter struct {
 	buffer        []byte        // 批量写入缓冲区
 	bufferSize    int           // 缓冲区大小（字节）
 	flushInterval time.Duration // 刷新间隔
+	batchSize     int           // 批量接收日志数量
 	compressChan  chan string   // 压缩任务通道
 	stopChan      chan struct{} // 停止信号
 	wg            sync.WaitGroup
@@ -37,12 +39,13 @@ type FileAdapter struct {
 type FileConfig struct {
 	Dir           string        // 日志目录，默认 "logs"
 	FileName      string        // 文件名模板，默认 "2006-01-02.log"（会格式化为当前日期，如：2024-01-15.log）
-	MaxSize       int64         // 最大文件大小（字节），默认 200MB
+	MaxSize       int64         // 最大文件大小（字节），默认 500MB
 	RetainDays    int           // 保留天数，默认 30
 	UseJSON       bool          // 是否使用 JSON 格式，默认 true
-	BufferSize    int           // 缓冲区大小（字节），默认 64KB
-	FlushInterval time.Duration // 刷新间隔，默认 100ms
-	ChannelSize   int           // 写入通道缓冲区大小，默认 5000
+	BufferSize    int           // 缓冲区大小（字节），默认 128KB
+	FlushInterval time.Duration // 刷新间隔，默认 50ms
+	ChannelSize   int           // 写入通道缓冲区大小，默认 10000
+	BatchSize     int           // 批量接收日志数量，默认 CPU 核数 * 2
 }
 
 // NewFileAdapter 创建文件适配器
@@ -50,7 +53,7 @@ func NewFileAdapter(config ...FileConfig) (*FileAdapter, error) {
 	cfg := FileConfig{
 		Dir:        "logs",
 		FileName:   "2006-01-02.log",
-		MaxSize:    200 * 1024 * 1024, // 200MB
+		MaxSize:    500 * 1024 * 1024, // 500MB
 		RetainDays: 30,
 		UseJSON:    true,
 	}
@@ -72,17 +75,21 @@ func NewFileAdapter(config ...FileConfig) (*FileAdapter, error) {
 		cfg.BufferSize = c.BufferSize
 		cfg.FlushInterval = c.FlushInterval
 		cfg.ChannelSize = c.ChannelSize
+		cfg.BatchSize = c.BatchSize
 	}
 
 	// 设置默认值
 	if cfg.BufferSize <= 0 {
-		cfg.BufferSize = 64 * 1024 // 64KB
+		cfg.BufferSize = 128 * 1024 // 128KB
 	}
 	if cfg.FlushInterval <= 0 {
-		cfg.FlushInterval = 100 * time.Millisecond
+		cfg.FlushInterval = 50 * time.Millisecond
 	}
 	if cfg.ChannelSize <= 0 {
-		cfg.ChannelSize = 5000
+		cfg.ChannelSize = 10000
+	}
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = runtime.NumCPU() * 2 // 默认 CPU 核数 * 2
 	}
 
 	adapter := &FileAdapter{
@@ -95,6 +102,7 @@ func NewFileAdapter(config ...FileConfig) (*FileAdapter, error) {
 		buffer:        make([]byte, 0, cfg.BufferSize),
 		bufferSize:    cfg.BufferSize,
 		flushInterval: cfg.FlushInterval,
+		batchSize:     cfg.BatchSize,
 		compressChan:  make(chan string, 100),
 		stopChan:      make(chan struct{}),
 	}
@@ -167,7 +175,7 @@ func (f *FileAdapter) writeWorker() {
 			} else {
 				// 尝试批量接收更多数据（非阻塞）
 				batchDone := false
-				for i := 0; i < 10 && !batchDone; i++ { // 最多批量接收 10 条
+				for i := 0; i < f.batchSize && !batchDone; i++ { // 最多批量接收 batchSize 条
 					select {
 					case moreData := <-f.writeChan:
 						f.mu.Lock()
