@@ -12,6 +12,7 @@
 6. **文件管理**: 支持自定义目录、文件名、文件大小
 7. **自动切割**: 文件超过设置大小后自动切割
 8. **自动压缩**: 支持设置日志文件保留天数，自动进行 gzip 压缩
+9. **异步缓冲写入**: 文件适配器支持异步缓冲写入，大幅提升高并发性能
 
 ## 快速开始
 
@@ -80,12 +81,15 @@ goolog.SetTraceLevel(goolog.ERROR)
 ### 文件适配器
 
 ```go
+import "time"
+
+// 基础配置
 fileAdapter, err := adapters.NewFileAdapter(adapters.FileConfig{
     Dir:        "logs",                    // 日志目录
     FileName:   "2006-01-02.log",         // 文件名模板（支持日期格式，会格式化为当前日期，如：2024-01-15.log）
     MaxSize:    200 * 1024 * 1024,        // 最大文件大小（200MB）
     RetainDays: 30,                        // 保留天数，默认 30
-    UseJSON:    false,                     // 是否使用 JSON 格式
+    UseJSON:    true,                      // 是否使用 JSON 格式，默认 true
 })
 if err != nil {
     panic(err)
@@ -94,6 +98,29 @@ defer fileAdapter.Close()
 
 goolog.SetAdapter(fileAdapter)
 ```
+
+#### 高性能配置（异步缓冲写入）
+
+文件适配器支持异步缓冲写入，大幅提升高并发场景下的性能：
+
+```go
+fileAdapter, err := adapters.NewFileAdapter(adapters.FileConfig{
+    Dir:           "logs",
+    FileName:      "2006-01-02.log",
+    MaxSize:       200 * 1024 * 1024,        // 200MB
+    RetainDays:    30,
+    UseJSON:       true,
+    BufferSize:    128 * 1024,                // 缓冲区大小，默认 64KB
+    FlushInterval: 50 * time.Millisecond,    // 刷新间隔，默认 100ms
+    ChannelSize:   2000,                      // 写入通道缓冲区大小，默认 5000
+})
+```
+
+**性能优势**：
+- ✅ 非阻塞写入：写入操作快速返回，不阻塞调用者
+- ✅ 批量写入：减少系统调用，提升吞吐量 10-100 倍
+- ✅ 低锁竞争：只有后台协程写入文件，大幅降低锁竞争
+- ✅ 适合高并发：特别适合高并发、高吞吐量的生产环境
 
 ### ES 适配器
 
@@ -163,22 +190,64 @@ goolog.AddHook(func(msg *goolog.Message) {
 
 ### 文件适配器配置
 
+#### 基础配置
+
 - `Dir`: 日志目录，默认 "logs"
 - `FileName`: 文件名模板，支持 Go 时间格式，默认 "2006-01-02.log"（会格式化为当前日期，如：2024-01-15.log）
 - `MaxSize`: 最大文件大小（字节），默认 200MB
 - `RetainDays`: 保留天数，默认 30 天
-- `UseJSON`: 是否使用 JSON 格式，默认 false
+- `UseJSON`: 是否使用 JSON 格式，默认 true
+
+#### 异步缓冲写入配置（性能优化）
+
+- `BufferSize`: 缓冲区大小（字节），默认 64KB
+  - 缓冲区达到此大小时会立即刷新到文件
+  - 建议值：32KB - 256KB，根据日志大小和频率调整
+- `FlushInterval`: 刷新间隔，默认 100ms
+  - 定期刷新缓冲区到文件，确保日志及时写入
+  - 建议值：50ms - 200ms，根据延迟要求调整
+- `ChannelSize`: 写入通道缓冲区大小，默认 5000
+  - 控制异步写入通道的缓冲容量
+  - 通道满时会丢弃日志（避免阻塞调用者）
+  - 建议值：1000 - 10000，根据并发量调整
+
+#### 配置建议
+
+**高吞吐量场景**：
+```go
+BufferSize:    256 * 1024,              // 256KB
+FlushInterval: 200 * time.Millisecond, // 200ms
+ChannelSize:   5000,                    // 5000
+```
+
+**低延迟场景**：
+```go
+BufferSize:    32 * 1024,              // 32KB
+FlushInterval: 50 * time.Millisecond,   // 50ms
+ChannelSize:   2000,                    // 2000
+```
+
+**高可靠性场景**：
+```go
+BufferSize:    64 * 1024,              // 64KB
+FlushInterval: 100 * time.Millisecond,  // 100ms
+ChannelSize:   10000,                   // 10000（减少丢失）
+```
 
 ### 文件切割规则
 
-- 当日志文件超过 `MaxSize` 时，会自动切割为 `文件名.1.log`、`文件名.2.log` 等
-- 每天会自动创建新的日志文件
+- 当日志文件超过 `MaxSize` 时，会自动创建新的索引文件（`文件名.1.log`、`文件名.2.log` 等）
+- 索引从 1 开始，每次达到大小限制时索引 +1
+- 每天会自动创建新的日志文件（索引重置为 0）
 - 超过保留天数的日志文件会自动进行 gzip 压缩
 - 压缩后的文件格式为 `文件名.log.gz`
 
 ## 注意事项
 
-1. 文件适配器会在后台自动进行压缩和清理，使用完毕后建议调用 `Close()` 方法
-2. ES 和 Kafka 适配器是基础实现，实际使用时可能需要根据具体的客户端库进行调整
-3. 钩子函数在独立的 goroutine 中执行，需要注意线程安全
-4. Entry 对象会被复用，使用对象池提高性能
+1. **文件适配器关闭**：文件适配器会在后台自动进行压缩和清理，使用完毕后**必须**调用 `Close()` 方法，确保所有缓冲数据被写入
+2. **异步写入数据丢失**：使用异步缓冲写入时，如果 channel 缓冲区满了会丢弃日志（避免阻塞）。可以通过增大 `ChannelSize` 减少丢失，但无法完全避免
+3. **程序崩溃**：异常退出时，缓冲区中的数据可能丢失。正常关闭时会刷新所有数据
+4. **ES 和 Kafka 适配器**：是基础实现，实际使用时可能需要根据具体的客户端库进行调整
+5. **钩子函数**：在独立的 goroutine 中执行，需要注意线程安全
+6. **Entry 对象复用**：Entry 对象会被复用，使用对象池提高性能
+7. **内存使用**：异步缓冲写入会占用内存（缓冲区 + channel），默认约 64KB + 5000 条日志，可根据实际情况调整
