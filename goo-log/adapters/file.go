@@ -23,7 +23,6 @@ type FileAdapter struct {
 	currentFile   *os.File      // 当前文件
 	currentSize   int64         // 当前文件大小
 	currentDate   string        // 当前日期
-	currentPath   string        // 当前文件路径（基础文件名）
 	mu            sync.Mutex    // 互斥锁（保护文件操作）
 	writeChan     chan []byte   // 写入通道（异步缓冲）
 	buffer        []byte        // 批量写入缓冲区
@@ -56,19 +55,23 @@ func NewFileAdapter(config ...FileConfig) (*FileAdapter, error) {
 		UseJSON:    true,
 	}
 	if len(config) > 0 {
-		if config[0].Dir != "" {
-			cfg.Dir = config[0].Dir
+		c := config[0]
+		if c.Dir != "" {
+			cfg.Dir = c.Dir
 		}
-		if config[0].FileName != "" {
-			cfg.FileName = config[0].FileName
+		if c.FileName != "" {
+			cfg.FileName = c.FileName
 		}
-		if config[0].MaxSize > 0 {
-			cfg.MaxSize = config[0].MaxSize
+		if c.MaxSize > 0 {
+			cfg.MaxSize = c.MaxSize
 		}
-		if config[0].RetainDays > 0 {
-			cfg.RetainDays = config[0].RetainDays
+		if c.RetainDays > 0 {
+			cfg.RetainDays = c.RetainDays
 		}
-		cfg.UseJSON = config[0].UseJSON
+		cfg.UseJSON = c.UseJSON
+		cfg.BufferSize = c.BufferSize
+		cfg.FlushInterval = c.FlushInterval
+		cfg.ChannelSize = c.ChannelSize
 	}
 
 	// 设置默认值
@@ -134,7 +137,7 @@ func (f *FileAdapter) Write(msg *goolog.Message) {
 	default:
 		// channel 满了，可以选择记录警告或丢弃
 		// 这里选择静默丢弃，避免阻塞
-		fmt.Fprintf(os.Stderr, "[goo-log] 写入通道已满，丢弃日志\n")
+		fmt.Fprintf(os.Stderr, "[goo-log] 写入通道已满，丢弃日志: %s\n", string(data))
 	}
 }
 
@@ -152,11 +155,34 @@ func (f *FileAdapter) writeWorker() {
 			f.flushRemaining()
 			return
 		case data := <-f.writeChan:
-			// 添加到缓冲区
+			// 批量接收数据，减少加锁次数
+			f.mu.Lock()
 			f.buffer = append(f.buffer, data...)
+			bufferLen := len(f.buffer)
+			f.mu.Unlock()
+
 			// 如果缓冲区达到大小，立即刷新
-			if len(f.buffer) >= f.bufferSize {
+			if bufferLen >= f.bufferSize {
 				f.flush()
+			} else {
+				// 尝试批量接收更多数据（非阻塞）
+				batchDone := false
+				for i := 0; i < 10 && !batchDone; i++ { // 最多批量接收 10 条
+					select {
+					case moreData := <-f.writeChan:
+						f.mu.Lock()
+						f.buffer = append(f.buffer, moreData...)
+						bufferLen = len(f.buffer)
+						f.mu.Unlock()
+						if bufferLen >= f.bufferSize {
+							f.flush()
+							batchDone = true
+						}
+					default:
+						// 没有更多数据，退出批量接收
+						batchDone = true
+					}
+				}
 			}
 		case <-flushTicker.C:
 			// 定期刷新
@@ -167,45 +193,39 @@ func (f *FileAdapter) writeWorker() {
 
 // flush 刷新缓冲区到文件
 func (f *FileAdapter) flush() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// 检查缓冲区是否为空
 	if len(f.buffer) == 0 {
 		return
 	}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.flushLocked()
+}
+
+// flushLocked 刷新缓冲区到文件（内部方法，调用前必须持有 mu 锁）
+func (f *FileAdapter) flushLocked() {
+	// 复制缓冲区数据
+	bufferData := make([]byte, len(f.buffer))
+	copy(bufferData, f.buffer)
+	f.buffer = f.buffer[:0] // 清空缓冲区（保留容量）
 
 	// 检查是否需要切换文件
 	now := time.Now()
 	dateStr := now.Format("2006-01-02")
-
-	// 如果日期变化，必须切换文件
 	needRotate := f.currentFile == nil || f.currentDate != dateStr
 
 	// 如果文件过大，需要切换文件
 	if !needRotate && f.currentFile != nil {
-		// 检查当前文件大小（需要重新获取，因为可能被其他进程修改）
-		if info, err := f.currentFile.Stat(); err == nil {
-			actualSize := info.Size()
-			if actualSize >= f.maxSize {
-				needRotate = true
-			} else {
-				// 更新当前文件大小
-				f.currentSize = actualSize
-			}
-		} else {
-			// 文件状态获取失败，可能需要重新打开
+		if f.currentSize+int64(len(bufferData)) >= f.maxSize {
 			needRotate = true
 		}
-	} else if !needRotate && f.currentFile == nil {
-		// 文件未打开，需要初始化
-		needRotate = true
 	}
 
 	if needRotate {
-		if err := f.rotateFile(dateStr); err != nil {
+		if err := f.rotateFileLocked(dateStr); err != nil {
 			fmt.Fprintf(os.Stderr, "[goo-log] 文件切换失败: %v\n", err)
-			// 清空缓冲区，避免重复写入
-			f.buffer = f.buffer[:0]
 			return
 		}
 	}
@@ -213,53 +233,58 @@ func (f *FileAdapter) flush() {
 	// 确保文件已打开
 	if f.currentFile == nil {
 		fmt.Fprintf(os.Stderr, "[goo-log] 当前文件未打开\n")
-		f.buffer = f.buffer[:0]
 		return
 	}
 
-	// 写入缓冲区数据
-	n, err := f.currentFile.Write(f.buffer)
+	// 写入数据
+	n, err := f.currentFile.Write(bufferData)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[goo-log] 写入日志失败: %v\n", err)
-		// 清空缓冲区
-		f.buffer = f.buffer[:0]
 		// 尝试重新打开文件
-		if err := f.rotateFile(dateStr); err != nil {
+		if err := f.rotateFileLocked(dateStr); err != nil {
 			fmt.Fprintf(os.Stderr, "[goo-log] 重新打开文件失败: %v\n", err)
+		} else {
+			// 重新打开成功，尝试再次写入
+			if f.currentFile != nil {
+				if n, err := f.currentFile.Write(bufferData); err == nil {
+					f.currentSize += int64(n)
+				}
+			}
 		}
 		return
 	}
 
 	f.currentSize += int64(n)
-
-	// 写入后再次检查文件大小，如果超过限制，下次刷新时切换文件
-	if f.currentSize >= f.maxSize {
-		// 标记需要切换，但不立即切换（避免频繁切换）
-		// 下次 flush 时会自动切换
-	}
-
-	// 清空缓冲区（保留容量）
-	f.buffer = f.buffer[:0]
 }
 
 // flushRemaining 刷新剩余数据（关闭时调用）
 func (f *FileAdapter) flushRemaining() {
-	// 处理 channel 中剩余的数据
+	// 批量处理 channel 中剩余的数据
+	f.mu.Lock()
+
+	// 批量接收所有剩余数据
 	for {
 		select {
 		case data := <-f.writeChan:
 			f.buffer = append(f.buffer, data...)
 		default:
-			// channel 已空，刷新缓冲区
-			f.flush()
-			return
+			// channel 已空，退出循环
+			goto flush
 		}
 	}
+
+flush:
+	// 如果缓冲区有数据，使用公共刷新逻辑（注意：此时已持有锁）
+	if len(f.buffer) > 0 {
+		f.flushLocked()
+	}
+	f.mu.Unlock()
 }
 
 // rotateFile 切换文件（Lumberjack 风格）
 // 参考 Lumberjack 实现：始终写入基础文件，达到大小后原子重命名
-func (f *FileAdapter) rotateFile(dateStr string) error {
+// 注意：调用此函数前必须持有 mu 锁
+func (f *FileAdapter) rotateFileLocked(dateStr string) error {
 	// 关闭旧文件
 	if f.currentFile != nil {
 		f.currentFile.Close()
@@ -270,19 +295,14 @@ func (f *FileAdapter) rotateFile(dateStr string) error {
 	baseFileName := f.generateBaseFileName(dateStr)
 	baseFilePath := filepath.Join(f.dir, baseFileName)
 
-	// 如果日期变化，重置并处理旧文件
+	// 检查基础文件是否存在，如果存在则重命名为索引文件
+	if _, err := os.Stat(baseFilePath); err == nil {
+		f.renameToIndexFile(baseFilePath, dateStr)
+	}
+
+	// 更新当前日期
 	if f.currentDate != dateStr {
-		// 如果存在旧日期的基础文件，重命名为索引文件
-		if _, err := os.Stat(baseFilePath); err == nil {
-			f.renameToIndexFile(baseFilePath, dateStr)
-		}
 		f.currentDate = dateStr
-	} else {
-		// 文件过大，需要轮转
-		// 如果基础文件存在，重命名为索引文件（Lumberjack 方式）
-		if _, err := os.Stat(baseFilePath); err == nil {
-			f.renameToIndexFile(baseFilePath, dateStr)
-		}
 	}
 
 	// 创建新的基础文件（始终使用基础文件名）
@@ -292,7 +312,6 @@ func (f *FileAdapter) rotateFile(dateStr string) error {
 	}
 
 	f.currentFile = file
-	f.currentPath = baseFilePath
 	f.currentSize = 0
 	return nil
 }
@@ -317,33 +336,66 @@ func (f *FileAdapter) renameToIndexFile(baseFilePath, dateStr string) {
 
 // generateBaseFileName 生成基础文件名（无索引）
 func (f *FileAdapter) generateBaseFileName(dateStr string) string {
+	date := f.parseDate(dateStr)
+	return date.Format(f.fileName)
+}
+
+// parseDate 解析日期字符串
+func (f *FileAdapter) parseDate(dateStr string) time.Time {
 	date, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
-		date = time.Now()
+		return time.Now()
 	}
-	return date.Format(f.fileName)
+	return date
+}
+
+// getBaseName 获取基础文件名（不含扩展名）
+func (f *FileAdapter) getBaseName(dateStr string) (string, string) {
+	date := f.parseDate(dateStr)
+	baseFileName := date.Format(f.fileName)
+	ext := filepath.Ext(baseFileName)
+	baseName := baseFileName[:len(baseFileName)-len(ext)]
+	return baseName, ext
 }
 
 // findMaxIndex 找到当前日期的最大索引文件索引
 // 返回最大索引，如果没有索引文件则返回 -1
 func (f *FileAdapter) findMaxIndex(dateStr string) int {
-	date, err := time.Parse("2006-01-02", dateStr)
+	baseName, ext := f.getBaseName(dateStr)
+	baseFileName := baseName + ext
+
+	// 读取目录，查找所有匹配的索引文件
+	entries, err := os.ReadDir(f.dir)
 	if err != nil {
-		date = time.Now()
+		return -1
 	}
-	baseFileName := date.Format(f.fileName)
-	ext := filepath.Ext(baseFileName)
-	baseName := baseFileName[:len(baseFileName)-len(ext)]
 
 	maxIndex := -1
-	// 从索引1开始查找，找到最大的索引
-	for i := 1; ; i++ {
-		fileName := fmt.Sprintf("%s.%d%s", baseName, i, ext)
-		filePath := filepath.Join(f.dir, fileName)
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			break
+	prefix := baseName + "."
+	suffix := ext
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
-		maxIndex = i
+		fileName := entry.Name()
+
+		// 跳过基础文件本身
+		if fileName == baseFileName {
+			continue
+		}
+
+		// 检查是否是索引文件：baseName.index.ext
+		if strings.HasPrefix(fileName, prefix) && strings.HasSuffix(fileName, suffix) {
+			// 提取索引部分
+			indexStr := fileName[len(prefix) : len(fileName)-len(suffix)]
+			var index int
+			if n, _ := fmt.Sscanf(indexStr, "%d", &index); n == 1 && index > 0 {
+				if index > maxIndex {
+					maxIndex = index
+				}
+			}
+		}
 	}
 
 	return maxIndex
@@ -351,13 +403,7 @@ func (f *FileAdapter) findMaxIndex(dateStr string) int {
 
 // generateFileNameWithIndex 生成指定索引的文件名
 func (f *FileAdapter) generateFileNameWithIndex(dateStr string, index int) string {
-	date, err := time.Parse("2006-01-02", dateStr)
-	if err != nil {
-		date = time.Now()
-	}
-	baseFileName := date.Format(f.fileName)
-	ext := filepath.Ext(baseFileName)
-	baseName := baseFileName[:len(baseFileName)-len(ext)]
+	baseName, ext := f.getBaseName(dateStr)
 	return fmt.Sprintf("%s.%d%s", baseName, index, ext)
 }
 
@@ -417,30 +463,43 @@ func (f *FileAdapter) compressFile(filePath string) {
 // compressOldFiles 压缩旧文件
 func (f *FileAdapter) compressOldFiles() {
 	cutoffDate := time.Now().AddDate(0, 0, -f.retainDays)
-
-	filepath.Walk(f.dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-
-		// 只处理日志文件
-		if info.IsDir() || (!strings.HasSuffix(path, ".log") && !strings.HasSuffix(path, ".log.gz")) {
-			return nil
-		}
-
-		// 检查文件修改时间
-		if info.ModTime().Before(cutoffDate) {
-			// 如果未压缩，发送到压缩通道
-			if !strings.HasSuffix(path, ".gz") {
-				select {
-				case f.compressChan <- path:
-				default:
-				}
+	f.walkLogFiles(func(filePath string, fileName string, info os.FileInfo) {
+		// 只处理未压缩的日志文件
+		if !strings.HasSuffix(fileName, ".gz") && info.ModTime().Before(cutoffDate) {
+			select {
+			case f.compressChan <- filePath:
+			default:
 			}
 		}
-
-		return nil
 	})
+}
+
+// walkLogFiles 遍历日志文件（公共函数）
+func (f *FileAdapter) walkLogFiles(fn func(filePath, fileName string, info os.FileInfo)) {
+	entries, err := os.ReadDir(f.dir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		fileName := entry.Name()
+		// 只处理日志文件
+		if !strings.HasSuffix(fileName, ".log") && !strings.HasSuffix(fileName, ".log.gz") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		filePath := filepath.Join(f.dir, fileName)
+		fn(filePath, fileName, info)
+	}
 }
 
 // cleanupWorker 清理工作协程
@@ -466,23 +525,11 @@ func (f *FileAdapter) cleanupWorker() {
 // cleanupOldFiles 清理过期文件
 func (f *FileAdapter) cleanupOldFiles() {
 	cutoffDate := time.Now().AddDate(0, 0, -f.retainDays)
-
-	filepath.Walk(f.dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-
+	f.walkLogFiles(func(filePath string, fileName string, info os.FileInfo) {
 		// 只处理已压缩的日志文件
-		if info.IsDir() || !strings.HasSuffix(path, ".log.gz") {
-			return nil
+		if strings.HasSuffix(fileName, ".log.gz") && info.ModTime().Before(cutoffDate) {
+			os.Remove(filePath)
 		}
-
-		// 检查文件修改时间
-		if info.ModTime().Before(cutoffDate) {
-			os.Remove(path)
-		}
-
-		return nil
 	})
 }
 
