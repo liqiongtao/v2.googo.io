@@ -112,14 +112,11 @@ import (
 )
 
 func handler(c *gin.Context) {
-    // 从 gin.Context 创建上下文
-    ctx := goocontext.FromGinContext(c)
-    
-    // 或者从现有上下文更新
+    // 从现有上下文更新（推荐方式）
     parentCtx := goocontext.Default(context.Background()).
         WithAppName("my-app").
         WithTraceId()
-    ctx = parentCtx.WithGinContext(c)
+    ctx := parentCtx.WithGinContext(c)
     
     // 使用上下文
     appName := ctx.AppName()
@@ -138,7 +135,19 @@ import (
 
 // 服务端：从 gRPC context 提取上下文信息
 func (s *Server) MyMethod(ctx context.Context, req *pb.Request) (*pb.Response, error) {
-    gooCtx := goocontext.FromGrpcContext(ctx)
+    // 从标准库 context 创建上下文，然后从 gRPC metadata 提取信息
+    gooCtx := goocontext.Default(ctx)
+    
+    // 从 gRPC metadata 中提取 app-name 和 trace-id
+    if md, ok := metadata.FromIncomingContext(ctx); ok {
+        if values := md.Get("app-name"); len(values) > 0 {
+            gooCtx = gooCtx.WithValue("app-name", values[0])
+        }
+        if values := md.Get("trace-id"); len(values) > 0 {
+            gooCtx = gooCtx.WithValue("trace-id", values[0])
+        }
+    }
+    
     appName := gooCtx.AppName()
     traceId := gooCtx.TraceId()
     // ...
@@ -302,32 +311,6 @@ func WithTraceId(parent context.Context, traceId ...string) *Context
 - 如果不提供 `traceId`，会自动生成 UUID
 - 用于从标准库 `context.Context` 创建带追踪ID的上下文
 - 推荐使用 `Context.WithTraceId()` 方法进行链式调用
-
-#### AppName
-获取应用名称：
-```go
-func (c *Context) AppName() string
-```
-- 支持多种 key 格式：`AppName`, `app-name`, `app_name`
-
-#### TraceId
-获取追踪ID：
-```go
-func (c *Context) TraceId() string
-```
-- 支持多种 key 格式：`TraceId`, `trace-id`, `trace_id`, `request_id`
-
-#### FromGinContext
-从 gin.Context 创建新上下文：
-```go
-func FromGinContext(ginCtx *gin.Context) *Context
-```
-
-#### FromGrpcContext
-从 gRPC metadata 提取上下文信息：
-```go
-func FromGrpcContext(ctx context.Context) *Context
-```
 
 ### 值获取方法（Context 方法）
 

@@ -58,8 +58,12 @@ goolog.WithFieldF("price", "%.2f", 99.99).Info("价格信息")
 ```go
 import "v2.googo.io/goo-context"
 
-ctx := goocontext.WithAppName(nil, "my-app")
-ctx = goocontext.WithTraceId(ctx)
+// 链式调用创建上下文
+ctx := goocontext.WithAppName(nil, "my-app").WithTraceId()
+goolog.WithContext(ctx).Info("带上下文的日志")
+
+// 或者使用 Default 创建后链式调用
+ctx = goocontext.Default(nil).WithAppName("my-app").WithTraceId()
 goolog.WithContext(ctx).Info("带上下文的日志")
 ```
 

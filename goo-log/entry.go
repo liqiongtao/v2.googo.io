@@ -55,12 +55,11 @@ func (entry *Entry) WithFieldF(field string, format string, args ...any) *Entry 
 
 func (entry *Entry) WithContext(ctx *goocontext.Context) *Entry {
 	if ctx != nil {
-		appName := goocontext.AppName(ctx)
-		if appName != "" {
+		// 使用链式调用方式获取上下文值
+		if appName := ctx.AppName(); appName != "" {
 			entry.Data = append(entry.Data, DataField{Field: "app-name", Value: appName})
 		}
-		traceId := goocontext.TraceId(ctx)
-		if traceId != "" {
+		if traceId := ctx.TraceId(); traceId != "" {
 			entry.Data = append(entry.Data, DataField{Field: "trace-id", Value: traceId})
 		}
 	}
