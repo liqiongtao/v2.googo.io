@@ -5,27 +5,10 @@ import (
 	"strings"
 )
 
-// Value 从上下文中获取指定key的值（泛型版本）
-// 如果值不存在或类型不匹配，返回类型T的零值
-func Value[T any](c *Context, key string) T {
-	var zero T
-	if c == nil || c.Context == nil {
-		return zero
-	}
-	v := c.Context.Value(key)
-	if v == nil {
-		return zero
-	}
-	if t, ok := v.(T); ok {
-		return t
-	}
-	return zero
-}
-
 // ValueAny 从上下文中获取指定key的值
 // 返回原始值，需要调用者进行类型断言
-func ValueAny(c *Context, key string) any {
-	if c == nil || c.Context == nil {
+func (c *Context) ValueAny(key string) any {
+	if c.Context == nil {
 		return nil
 	}
 	return c.Context.Value(key)
@@ -33,8 +16,8 @@ func ValueAny(c *Context, key string) any {
 
 // ValueString 从上下文中获取字符串类型的值
 // 支持自动转换：int, int32, int64, float32, float64, bool
-func ValueString(c *Context, key string) string {
-	v := ValueAny(c, key)
+func (c *Context) ValueString(key string) string {
+	v := c.ValueAny(key)
 	if v == nil {
 		return ""
 	}
@@ -65,8 +48,8 @@ func ValueString(c *Context, key string) string {
 
 // ValueInt 从上下文中获取int类型的值
 // 支持自动转换：string, int32, int64, float32, float64, bool
-func ValueInt(c *Context, key string) int {
-	v := ValueAny(c, key)
+func (c *Context) ValueInt(key string) int {
+	v := c.ValueAny(key)
 	if v == nil {
 		return 0
 	}
@@ -102,8 +85,8 @@ func ValueInt(c *Context, key string) int {
 
 // ValueInt32 从上下文中获取int32类型的值
 // 支持自动转换：string, int, int64, float32, float64, bool
-func ValueInt32(c *Context, key string) int32 {
-	v := ValueAny(c, key)
+func (c *Context) ValueInt32(key string) int32 {
+	v := c.ValueAny(key)
 	if v == nil {
 		return 0
 	}
@@ -139,8 +122,8 @@ func ValueInt32(c *Context, key string) int32 {
 
 // ValueInt64 从上下文中获取int64类型的值
 // 支持自动转换：string, int, int32, float32, float64, bool
-func ValueInt64(c *Context, key string) int64 {
-	v := ValueAny(c, key)
+func (c *Context) ValueInt64(key string) int64 {
+	v := c.ValueAny(key)
 	if v == nil {
 		return 0
 	}
@@ -176,8 +159,8 @@ func ValueInt64(c *Context, key string) int64 {
 
 // ValueFloat32 从上下文中获取float32类型的值
 // 支持自动转换：string, int, int32, int64, float64, bool
-func ValueFloat32(c *Context, key string) float32 {
-	v := ValueAny(c, key)
+func (c *Context) ValueFloat32(key string) float32 {
+	v := c.ValueAny(key)
 	if v == nil {
 		return 0
 	}
@@ -213,8 +196,8 @@ func ValueFloat32(c *Context, key string) float32 {
 
 // ValueFloat64 从上下文中获取float64类型的值
 // 支持自动转换：string, int, int32, int64, float32, bool
-func ValueFloat64(c *Context, key string) float64 {
-	v := ValueAny(c, key)
+func (c *Context) ValueFloat64(key string) float64 {
+	v := c.ValueAny(key)
 	if v == nil {
 		return 0
 	}
@@ -251,8 +234,8 @@ func ValueFloat64(c *Context, key string) float64 {
 // ValueBool 从上下文中获取bool类型的值
 // 支持自动转换：string, int, int32, int64, float32, float64
 // 对于 string 类型：0, nil, null, false, "" 等返回 false，其他返回 true
-func ValueBool(c *Context, key string) bool {
-	v := ValueAny(c, key)
+func (c *Context) ValueBool(key string) bool {
+	v := c.ValueAny(key)
 	if v == nil {
 		return false
 	}

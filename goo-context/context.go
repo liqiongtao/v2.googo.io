@@ -18,6 +18,68 @@ type Context struct {
 	context.Context
 }
 
+// Default 创建一个默认的上下文，如果parent为nil则使用context.Background()
+func Default(parent context.Context) *Context {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return &Context{Context: parent}
+}
+
+// WithAppName 设置应用名称（包级别函数，用于从标准库context创建）
+func WithAppName(parent context.Context, appName string, args ...any) *Context {
+	return Default(context.WithValue(parent, "app-name", fmt.Sprintf(appName, args...)))
+}
+
+// WithTraceId 设置或生成TraceId（包级别函数，用于从标准库context创建）
+func WithTraceId(parent context.Context, traceId ...string) *Context {
+	var id string
+	if len(traceId) > 0 && traceId[0] != "" {
+		id = traceId[0]
+	} else {
+		id = uuid.New().String()
+	}
+	return Default(context.WithValue(parent, "trace-id", id))
+}
+
+// WithAppName 在当前上下文上设置应用名称
+func (c *Context) WithAppName(appName string, args ...any) *Context {
+	return c.WithValue("app-name", fmt.Sprintf(appName, args...))
+}
+
+// WithTraceId 在当前上下文上设置或生成TraceId
+func (c *Context) WithTraceId(traceId ...string) *Context {
+	var id string
+	if len(traceId) > 0 && traceId[0] != "" {
+		id = traceId[0]
+	} else {
+		id = uuid.New().String()
+	}
+	return c.WithValue("trace-id", id)
+}
+
+// AppName 获取应用名称
+func (c *Context) AppName() string {
+	keys := []string{"AppName", "app-name", "app_name"}
+	for _, key := range keys {
+		if v := c.ValueString(key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// TraceId 获取TraceId
+func (c *Context) TraceId() string {
+	keys := []string{"TraceId", "trace-id", "trace_id", "request_id"}
+	for _, key := range keys {
+		if v := c.ValueString(key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // WithValue 设置key-value对到上下文中
 func (c *Context) WithValue(key string, value any) *Context {
 	return Default(context.WithValue(c.Context, key, value))
@@ -80,7 +142,7 @@ func (c *Context) WithGinContext(ginCtx *gin.Context) *Context {
 	}
 
 	// 从gin.Context中获取或设置app-name
-	appName := AppName(c)
+	appName := c.AppName()
 	if appName == "" {
 		if v, exists := ginCtx.Get("app-name"); exists {
 			if name, ok := v.(string); ok {
@@ -92,7 +154,7 @@ func (c *Context) WithGinContext(ginCtx *gin.Context) *Context {
 	}
 
 	// 从gin.Context中获取或设置trace-id
-	traceId := TraceId(c)
+	traceId := c.TraceId()
 	if traceId == "" {
 		if v, exists := ginCtx.Get("trace-id"); exists {
 			if id, ok := v.(string); ok {
@@ -120,8 +182,8 @@ func (c *Context) WithGinContext(ginCtx *gin.Context) *Context {
 // WithGrpcContext 将上下文中的app-name和trace-id添加到gRPC的metadata中
 // 可以额外指定其他key-value对
 func (c *Context) WithGrpcContext(kvs ...string) *Context {
-	appName := AppName(c)
-	traceId := TraceId(c)
+	appName := c.AppName()
+	traceId := c.TraceId()
 
 	// 构建metadata key-value对
 	mdKVs := make([]string, 0, len(kvs)+4)
