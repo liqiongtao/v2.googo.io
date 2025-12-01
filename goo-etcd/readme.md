@@ -9,6 +9,8 @@
 
    * 定义Client对象，基于 go.etcd.io/etcd/client/v3
    * 定义Config对象
+   * 要支持服务注册、解析
+   * 要支持watch
    * 定义包方法
 
 ## 功能特性
@@ -40,7 +42,7 @@ package main
 import (
     "context"
     "fmt"
-    
+  
     "v2.googo.io/goo-etcd"
 )
 
@@ -50,33 +52,33 @@ func main() {
     config.Endpoints = []string{"localhost:2379"}
     config.Username = "root"
     config.Password = "password"
-    
+  
     if err := gooetcd.Register("default", config); err != nil {
         panic(err)
     }
-    
+  
     // 2. 使用默认客户端
     client, _ := gooetcd.Default()
     etcdClient := client.Client()
-    
+  
     ctx := context.Background()
-    
+  
     // 写入键值对
     _, err := etcdClient.Put(ctx, "key", "value")
     if err != nil {
         panic(err)
     }
-    
+  
     // 获取键值对
     resp, err := etcdClient.Get(ctx, "key")
     if err != nil {
         panic(err)
     }
-    
+  
     for _, ev := range resp.Kvs {
         fmt.Printf("key: %s, value: %s\n", ev.Key, ev.Value)
     }
-    
+  
     // 3. 使用包级别便捷方法
     defaultClient, _ := gooetcd.GetDefaultClient()
     defaultClient.Put(ctx, "key2", "value2")
