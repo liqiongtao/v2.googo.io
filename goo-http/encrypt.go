@@ -168,25 +168,28 @@ func (w *encryptResponseWriter) flush() error {
 	return err
 }
 
-func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
-	if encryptor == nil {
-		return func(c *gin.Context) {
-			c.Next()
-		}
+func (w *encryptResponseWriter) release() {
+	if w.buffer != nil {
+		putBuffer(w.buffer)
+		w.buffer = nil
 	}
+}
 
+func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 解密请求体
 		if c.Request.Body != nil && c.Request.ContentLength > 0 {
-			var buf bytes.Buffer
-			if _, err := io.Copy(&buf, c.Request.Body); err != nil {
+			buf := getBuffer()
+			defer putBuffer(buf)
+
+			if _, err := io.Copy(buf, c.Request.Body); err != nil {
 				ErrorWithStatus(&Context{Context: c}, http.StatusBadRequest, 4001, "获取请求数据失败")
 				return
 			}
 
 			decrypted, err := encryptor.Decrypt(buf.Bytes())
 			if err != nil {
-				ErrorWithStatus(&Context{Context: c}, http.StatusBadRequest, 4001, "获取请求数据失败")
+				ErrorWithStatus(&Context{Context: c}, http.StatusBadRequest, 4002, "获取请求数据失败")
 				return
 			}
 
@@ -198,7 +201,7 @@ func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
 		writer := &encryptResponseWriter{
 			ResponseWriter: c.Writer,
 			encryptor:      encryptor,
-			buffer:         &bytes.Buffer{},
+			buffer:         getBuffer(),
 		}
 		c.Writer = writer
 
@@ -209,5 +212,8 @@ func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
 			// 如果刷新失败，记录错误但不中断请求
 			// todo:: 记录日志
 		}
+
+		// 释放资源
+		writer.release()
 	}
 }

@@ -2,6 +2,7 @@ package goohttp
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -47,18 +48,18 @@ func (s *Server) setupMiddlewares() {
 	}
 
 	// 限流
-	if s.config.EnableRateLimit {
-		s.engine.Use(RateLimitMiddleware(s.config.RateLimitConfig))
+	if s.config.EnableRateLimit && len(s.config.RateLimiters) > 0 {
+		s.engine.Use(RateLimitMiddleware(s.config.RateLimiters))
 	}
 
 	// 加解密
-	if s.config.EnableEncrypt {
+	if s.config.EnableEncrypt && s.config.Encryptor != nil {
 		s.engine.Use(EncryptMiddleware(s.config.Encryptor))
 	}
 
 	// 响应钩子
-	if s.config.ResponseHook != nil {
-		s.engine.Use(ResponseHookMiddleware(s.config.ResponseHook))
+	if s.config.ResponseHooks != nil && len(s.config.ResponseHooks) > 0 {
+		s.engine.Use(ResponseHookMiddleware(s.config.ResponseHooks))
 	}
 }
 
@@ -67,6 +68,7 @@ func (s *Server) Run() error {
 		Addr:    s.config.Addr,
 		Handler: s.engine,
 	}
+	fmt.Printf("Listening on %s\n", s.config.Addr)
 	return s.server.ListenAndServe()
 }
 

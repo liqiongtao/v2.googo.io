@@ -70,7 +70,6 @@ func ErrorWithStatus(ctx *Context, httpStatus int, code int, message string) {
 // 响应钩子写入器
 type hookResponseWriter struct {
 	gin.ResponseWriter
-	hook     ResponseHook
 	Response *Response
 	mu       sync.Mutex
 }
@@ -94,11 +93,10 @@ func (w *hookResponseWriter) WriteHeader(statusCode int) {
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
-func ResponseHookMiddleware(hook ResponseHook) gin.HandlerFunc {
+func ResponseHookMiddleware(hooks []ResponseHook) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		writer := &hookResponseWriter{
 			ResponseWriter: c.Writer,
-			hook:           hook,
 			Response:       &Response{},
 		}
 
@@ -106,7 +104,12 @@ func ResponseHookMiddleware(hook ResponseHook) gin.HandlerFunc {
 
 		c.Next()
 
-		if ctx, ok := GetContext(c); ok {
+		ctx, ok := GetContext(c)
+		if !ok {
+			return
+		}
+
+		for _, hook := range hooks {
 			hook(ctx, writer.Response)
 		}
 	}
