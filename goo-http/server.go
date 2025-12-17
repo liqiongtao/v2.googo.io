@@ -78,9 +78,98 @@ type HandlerFunc func(*Context)
 
 func (s *Server) Get(path string, handlers ...HandlerFunc) {
 	s.engine.GET(path, func(c *gin.Context) {
-		ctx := &Context{Context: c}
+		ctx, ok := GetContext(c)
+		if !ok {
+			ctx = &Context{Context: c}
+		}
 		for _, handler := range handlers {
 			handler(ctx)
 		}
 	})
+}
+
+func (s *Server) Post(path string, handlers ...HandlerFunc) {
+	s.engine.POST(path, func(c *gin.Context) {
+		ctx, ok := GetContext(c)
+		if !ok {
+			ctx = &Context{Context: c}
+		}
+		for _, handler := range handlers {
+			handler(ctx)
+		}
+	})
+}
+
+func (s *Server) Put(path string, handlers ...HandlerFunc) {
+	s.engine.PUT(path, func(c *gin.Context) {
+		ctx, ok := GetContext(c)
+		if !ok {
+			ctx = &Context{Context: c}
+		}
+		for _, handler := range handlers {
+			handler(ctx)
+		}
+	})
+}
+
+func (s *Server) Delete(path string, handlers ...HandlerFunc) {
+	s.engine.DELETE(path, func(c *gin.Context) {
+		ctx, ok := GetContext(c)
+		if !ok {
+			ctx = &Context{Context: c}
+		}
+		for _, handler := range handlers {
+			handler(ctx)
+		}
+	})
+}
+
+func (s *Server) Patch(path string, handlers ...HandlerFunc) {
+	s.engine.PATCH(path, func(c *gin.Context) {
+		ctx, ok := GetContext(c)
+		if !ok {
+			ctx = &Context{Context: c}
+		}
+		for _, handler := range handlers {
+			handler(ctx)
+		}
+	})
+}
+
+func (s *Server) Options(path string, handlers ...HandlerFunc) {
+	s.engine.OPTIONS(path, func(c *gin.Context) {
+		ctx, ok := GetContext(c)
+		if !ok {
+			ctx = &Context{Context: c}
+		}
+		for _, handler := range handlers {
+			handler(ctx)
+		}
+	})
+}
+
+func (s *Server) Static(path, root string) {
+	s.engine.Static(path, root)
+}
+
+func (s *Server) StaticFile(path, filepath string) {
+	s.engine.StaticFile(path, filepath)
+}
+
+type RouterGroup struct {
+	group *gin.RouterGroup
+}
+
+func (s *Server) Group(path string, handlers ...HandlerFunc) *RouterGroup {
+	return &RouterGroup{
+		group: s.engine.Group(path, func(c *gin.Context) {
+			ctx, ok := GetContext(c)
+			if !ok {
+				ctx = &Context{Context: c}
+			}
+			for _, handler := range handlers {
+				handler(ctx)
+			}
+		}),
+	}
 }

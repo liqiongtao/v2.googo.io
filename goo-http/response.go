@@ -79,7 +79,13 @@ func (w *hookResponseWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	json.Unmarshal(data, w.Response)
+	if err := json.Unmarshal(data, w.Response); err != nil {
+		w.Response = &Response{
+			Code:    SuccessCode,
+			Message: SuccessMessage,
+			Data:    string(data),
+		}
+	}
 
 	return w.ResponseWriter.Write(data)
 }

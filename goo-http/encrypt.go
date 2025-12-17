@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -177,14 +178,20 @@ func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 解密请求体
 		if c.Request.Body != nil && c.Request.ContentLength > 0 {
-			var bf bytes.Buffer
-			if _, err := io.Copy(&bf, c.Request.Body); err == nil {
-				decrypted, err := encryptor.Decrypt(bf.Bytes())
-				if err != nil {
-					c.Request.Body = io.NopCloser(bytes.NewReader(decrypted))
-					c.Request.ContentLength = int64(len(decrypted))
-				}
+			var buf bytes.Buffer
+			if _, err := io.Copy(&buf, c.Request.Body); err != nil {
+				ErrorWithStatus(&Context{Context: c}, http.StatusBadRequest, 4001, "获取请求数据失败")
+				return
 			}
+
+			decrypted, err := encryptor.Decrypt(buf.Bytes())
+			if err != nil {
+				ErrorWithStatus(&Context{Context: c}, http.StatusBadRequest, 4001, "获取请求数据失败")
+				return
+			}
+
+			c.Request.Body = io.NopCloser(bytes.NewReader(decrypted))
+			c.Request.ContentLength = int64(len(decrypted))
 		}
 
 		// 包装响应写入器以加密响应
