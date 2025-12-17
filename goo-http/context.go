@@ -44,3 +44,7 @@ func (c *Context) ErrorWithData(code int, message string, data interface{}) {
 func (c *Context) ErrorWithStatus(httpStatus int, code int, message string) {
 	c.Context.JSON(httpStatus, Error(c, code, message))
 }
+
+func (c *Context) Abort(httpStatus int, code int, message string) {
+	c.Context.JSON(httpStatus, Error(c, code, message))
+}

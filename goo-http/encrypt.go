@@ -185,15 +185,13 @@ func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
 			defer putBuffer(buf)
 
 			if _, err := io.Copy(buf, c.Request.Body); err != nil {
-				ErrorWithStatus(ctx, http.StatusBadRequest, 4001, "获取请求数据失败")
-				c.Abort()
+				ctx.Abort(http.StatusBadRequest, 4001, "获取请求数据失败")
 				return
 			}
 
 			decrypted, err := encryptor.Decrypt(buf.Bytes())
 			if err != nil {
-				ErrorWithStatus(ctx, http.StatusBadRequest, 4002, "解密请求数据失败")
-				c.Abort()
+				ctx.Abort(http.StatusBadRequest, 4002, "解密请求数据失败")
 				return
 			}
 
