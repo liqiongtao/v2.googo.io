@@ -47,4 +47,5 @@ func (c *Context) ErrorWithStatus(httpStatus int, code int, message string) {
 
 func (c *Context) Abort(httpStatus int, code int, message string) {
 	c.Context.JSON(httpStatus, Error(c, code, message))
+	c.Context.Abort()
 }

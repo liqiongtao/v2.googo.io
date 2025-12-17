@@ -58,12 +58,12 @@ func (s *Server) setupMiddlewares() {
 		s.engine.Use(RateLimitMiddleware(s.config.RateLimiters))
 	}
 
-	// 响应钩子（需要在加密之前，以便解析JSON响应）
+	// 响应钩子
 	if s.config.ResponseHooks != nil && len(s.config.ResponseHooks) > 0 {
 		s.engine.Use(ResponseHookMiddleware(s.config.ResponseHooks))
 	}
 
-	// 加解密（最后执行，确保响应钩子能先处理原始响应）
+	// 加解密
 	if s.config.EnableEncrypt && s.config.Encryptor != nil {
 		s.engine.Use(EncryptMiddleware(s.config.Encryptor))
 	}
