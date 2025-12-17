@@ -1,170 +1,107 @@
 package goohttp
 
 import (
+	"encoding/json"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Response 统一响应结构
+const (
+	SuccessCode    = 0         // 成功状态码
+	SuccessMessage = "success" // 成功消息
+)
+
+type ResponseHook func(ctx *Context, resp *Response)
+
 type Response struct {
-	Code    int         `json:"code"`    // 业务状态码
-	Message string      `json:"message"` // 响应消息
-	Data    interface{} `json:"data"`    // 响应数据
-	TraceId string      `json:"trace_id,omitempty"` // 追踪ID
+	Code    int    `json:"code,omitempty"`     // 业务状态码
+	Message string `json:"message,omitempty"`  // 响应消息
+	Data    any    `json:"data,omitempty"`     // 响应数据
+	TraceId string `json:"trace_id,omitempty"` // 追踪ID
 }
 
-// ResponseHook 响应钩子函数类型
-type ResponseHook func(c *gin.Context, resp *Response)
-
-// Success 成功响应
-func Success(c *gin.Context, data interface{}) {
-	resp := &Response{
-		Code:    0,
-		Message: "success",
+func Success(ctx *Context, data any) {
+	ctx.Context.JSON(http.StatusOK, Response{
+		Code:    SuccessCode,
+		Message: SuccessMessage,
 		Data:    data,
-	}
-	
-	// 添加traceId
-	if traceId := getTraceId(c); traceId != "" {
-		resp.TraceId = traceId
-	}
-	
-	// 执行响应钩子
-	executeResponseHooks(c, resp)
-	
-	c.JSON(http.StatusOK, resp)
+		TraceId: ctx.TraceId(),
+	})
 }
 
-// SuccessWithMessage 带消息的成功响应
-func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
-	resp := &Response{
-		Code:    0,
+func SuccessWithMessage(ctx *Context, message string, data interface{}) {
+	ctx.Context.JSON(http.StatusOK, Response{
+		Code:    SuccessCode,
 		Message: message,
 		Data:    data,
-	}
-	
-	// 添加traceId
-	if traceId := getTraceId(c); traceId != "" {
-		resp.TraceId = traceId
-	}
-	
-	// 执行响应钩子
-	executeResponseHooks(c, resp)
-	
-	c.JSON(http.StatusOK, resp)
+		TraceId: ctx.TraceId(),
+	})
 }
 
-// Error 错误响应
-func Error(c *gin.Context, code int, message string) {
-	resp := &Response{
+func Error(ctx *Context, code int, message string) {
+	ctx.Context.JSON(http.StatusOK, Response{
 		Code:    code,
 		Message: message,
 		Data:    nil,
-	}
-	
-	// 添加traceId
-	if traceId := getTraceId(c); traceId != "" {
-		resp.TraceId = traceId
-	}
-	
-	// 执行响应钩子
-	executeResponseHooks(c, resp)
-	
-	c.JSON(http.StatusOK, resp)
+		TraceId: ctx.TraceId(),
+	})
 }
 
-// ErrorWithData 带数据的错误响应
-func ErrorWithData(c *gin.Context, code int, message string, data interface{}) {
-	resp := &Response{
+func ErrorWithData(ctx *Context, code int, message string, data interface{}) {
+	ctx.Context.JSON(http.StatusOK, Response{
 		Code:    code,
 		Message: message,
 		Data:    data,
-	}
-	
-	// 添加traceId
-	if traceId := getTraceId(c); traceId != "" {
-		resp.TraceId = traceId
-	}
-	
-	// 执行响应钩子
-	executeResponseHooks(c, resp)
-	
-	c.JSON(http.StatusOK, resp)
+		TraceId: ctx.TraceId(),
+	})
 }
 
-// BadRequest 400错误响应
-func BadRequest(c *gin.Context, message string) {
-	if message == "" {
-		message = "bad request"
-	}
-	Error(c, http.StatusBadRequest, message)
+func ErrorWithStatus(ctx *Context, httpStatus int, code int, message string) {
+	ctx.Context.JSON(httpStatus, Response{
+		Code:    code,
+		Message: message,
+		Data:    nil,
+		TraceId: ctx.TraceId(),
+	})
 }
 
-// Unauthorized 401错误响应
-func Unauthorized(c *gin.Context, message string) {
-	if message == "" {
-		message = "unauthorized"
-	}
-	Error(c, http.StatusUnauthorized, message)
+// 响应钩子写入器
+type hookResponseWriter struct {
+	gin.ResponseWriter
+	hook     ResponseHook
+	Response *Response
+	mu       sync.Mutex
 }
 
-// Forbidden 403错误响应
-func Forbidden(c *gin.Context, message string) {
-	if message == "" {
-		message = "forbidden"
-	}
-	Error(c, http.StatusForbidden, message)
+func (w *hookResponseWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	json.Unmarshal(data, w.Response)
+
+	return w.ResponseWriter.Write(data)
 }
 
-// NotFound 404错误响应
-func NotFound(c *gin.Context, message string) {
-	if message == "" {
-		message = "not found"
-	}
-	Error(c, http.StatusNotFound, message)
+func (w *hookResponseWriter) WriteHeader(statusCode int) {
+	w.ResponseWriter.WriteHeader(statusCode)
 }
 
-// InternalServerError 500错误响应
-func InternalServerError(c *gin.Context, message string) {
-	if message == "" {
-		message = "internal server error"
-	}
-	Error(c, http.StatusInternalServerError, message)
-}
-
-// getTraceId 从gin.Context获取traceId
-func getTraceId(c *gin.Context) string {
-	if c == nil {
-		return ""
-	}
-	
-	// 先从gin.Context中获取
-	if v, exists := c.Get("trace-id"); exists {
-		if id, ok := v.(string); ok && id != "" {
-			return id
+func ResponseHookMiddleware(hook ResponseHook) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		writer := &hookResponseWriter{
+			ResponseWriter: c.Writer,
+			hook:           hook,
+			Response:       &Response{},
 		}
-	}
-	
-	// 从请求头中获取
-	if traceId := c.GetHeader("X-Trace-Id"); traceId != "" {
-		return traceId
-	}
-	
-	return ""
-}
 
-// executeResponseHooks 执行响应钩子
-func executeResponseHooks(c *gin.Context, resp *Response) {
-	// 从gin.Context中获取响应钩子列表
-	if v, exists := c.Get("response-hooks"); exists {
-		if hooks, ok := v.([]ResponseHook); ok {
-			for _, hook := range hooks {
-				if hook != nil {
-					hook(c, resp)
-				}
-			}
+		c.Writer = writer
+
+		c.Next()
+
+		if ctx, ok := GetContext(c); ok {
+			hook(ctx, writer.Response)
 		}
 	}
 }
-
