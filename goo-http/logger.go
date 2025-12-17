@@ -41,14 +41,13 @@ func LogMiddleware(logger Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		startTime := time.Now()
 
-		data := map[string]any{
-			"method": c.Request.Method,
-			"uri":    c.Request.RequestURI,
-			"ip":     c.ClientIP(),
-		}
+		ctx := &Context{Context: c}
 
-		if ctx, ok := GetContext(c); ok {
-			data["trace_id"] = ctx.TraceId()
+		data := map[string]any{
+			"method":   c.Request.Method,
+			"uri":      c.Request.RequestURI,
+			"trace_id": ctx.TraceId(),
+			"ip":       ctx.ClientIP(),
 		}
 
 		logger.Info(c.Request.Context(), "Request", data)

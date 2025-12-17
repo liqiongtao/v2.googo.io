@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 type Server struct {
-	config *Config
-	engine *gin.Engine
-	server *http.Server
+	config     *Config
+	engine     *gin.Engine
+	server     *http.Server
+	rateLimits []*RateLimiter // 保存限流器引用，用于优雅关闭
 }
 
 func New(opts ...ConfigOption) *Server {
@@ -49,17 +54,18 @@ func (s *Server) setupMiddlewares() {
 
 	// 限流
 	if s.config.EnableRateLimit && len(s.config.RateLimiters) > 0 {
+		s.rateLimits = s.config.RateLimiters
 		s.engine.Use(RateLimitMiddleware(s.config.RateLimiters))
 	}
 
-	// 加解密
-	if s.config.EnableEncrypt && s.config.Encryptor != nil {
-		s.engine.Use(EncryptMiddleware(s.config.Encryptor))
-	}
-
-	// 响应钩子
+	// 响应钩子（需要在加密之前，以便解析JSON响应）
 	if s.config.ResponseHooks != nil && len(s.config.ResponseHooks) > 0 {
 		s.engine.Use(ResponseHookMiddleware(s.config.ResponseHooks))
+	}
+
+	// 加解密（最后执行，确保响应钩子能先处理原始响应）
+	if s.config.EnableEncrypt && s.config.Encryptor != nil {
+		s.engine.Use(EncryptMiddleware(s.config.Encryptor))
 	}
 }
 
@@ -68,86 +74,70 @@ func (s *Server) Run() error {
 		Addr:    s.config.Addr,
 		Handler: s.engine,
 	}
+
+	go func() {
+		sigint := make(chan os.Signal, 1)
+		signal.Notify(sigint, os.Interrupt, syscall.SIGTERM)
+		<-sigint
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		s.Shutdown(ctx)
+	}()
+
 	fmt.Printf("Listening on %s\n", s.config.Addr)
+
 	return s.server.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	// 停止所有限流器的清理goroutine
+	for _, limiter := range s.rateLimits {
+		limiter.Stop()
+	}
 	return s.server.Shutdown(ctx)
 }
 
 type HandlerFunc func(*Context)
 
-func (s *Server) Get(path string, handlers ...HandlerFunc) {
-	s.engine.GET(path, func(c *gin.Context) {
-		ctx, ok := GetContext(c)
-		if !ok {
-			ctx = &Context{Context: c}
-		}
+// 将HandlerFunc转换为gin.HandlerFunc的辅助函数
+func (s *Server) wrapHandlers(handlers ...HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := &Context{Context: c}
+
 		for _, handler := range handlers {
 			handler(ctx)
+			// 如果handler调用了Abort，停止执行后续handler
+			if c.IsAborted() {
+				return
+			}
 		}
-	})
+	}
+}
+
+func (s *Server) Get(path string, handlers ...HandlerFunc) {
+	s.engine.GET(path, s.wrapHandlers(handlers...))
 }
 
 func (s *Server) Post(path string, handlers ...HandlerFunc) {
-	s.engine.POST(path, func(c *gin.Context) {
-		ctx, ok := GetContext(c)
-		if !ok {
-			ctx = &Context{Context: c}
-		}
-		for _, handler := range handlers {
-			handler(ctx)
-		}
-	})
+	s.engine.POST(path, s.wrapHandlers(handlers...))
 }
 
 func (s *Server) Put(path string, handlers ...HandlerFunc) {
-	s.engine.PUT(path, func(c *gin.Context) {
-		ctx, ok := GetContext(c)
-		if !ok {
-			ctx = &Context{Context: c}
-		}
-		for _, handler := range handlers {
-			handler(ctx)
-		}
-	})
+	s.engine.PUT(path, s.wrapHandlers(handlers...))
 }
 
 func (s *Server) Delete(path string, handlers ...HandlerFunc) {
-	s.engine.DELETE(path, func(c *gin.Context) {
-		ctx, ok := GetContext(c)
-		if !ok {
-			ctx = &Context{Context: c}
-		}
-		for _, handler := range handlers {
-			handler(ctx)
-		}
-	})
+	s.engine.DELETE(path, s.wrapHandlers(handlers...))
 }
 
 func (s *Server) Patch(path string, handlers ...HandlerFunc) {
-	s.engine.PATCH(path, func(c *gin.Context) {
-		ctx, ok := GetContext(c)
-		if !ok {
-			ctx = &Context{Context: c}
-		}
-		for _, handler := range handlers {
-			handler(ctx)
-		}
-	})
+	s.engine.PATCH(path, s.wrapHandlers(handlers...))
 }
 
 func (s *Server) Options(path string, handlers ...HandlerFunc) {
-	s.engine.OPTIONS(path, func(c *gin.Context) {
-		ctx, ok := GetContext(c)
-		if !ok {
-			ctx = &Context{Context: c}
-		}
-		for _, handler := range handlers {
-			handler(ctx)
-		}
-	})
+	s.engine.OPTIONS(path, s.wrapHandlers(handlers...))
 }
 
 func (s *Server) Static(path, root string) {
@@ -164,14 +154,6 @@ type RouterGroup struct {
 
 func (s *Server) Group(path string, handlers ...HandlerFunc) *RouterGroup {
 	return &RouterGroup{
-		group: s.engine.Group(path, func(c *gin.Context) {
-			ctx, ok := GetContext(c)
-			if !ok {
-				ctx = &Context{Context: c}
-			}
-			for _, handler := range handlers {
-				handler(ctx)
-			}
-		}),
+		group: s.engine.Group(path, s.wrapHandlers(handlers...)),
 	}
 }

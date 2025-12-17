@@ -4,33 +4,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	HttpRequestContextName = "http-request-context"
-)
-
 type Context struct {
 	*gin.Context
-	traceId string
 }
 
 func (c *Context) TraceId() string {
-	return c.traceId
+	return c.Context.GetString("trace-id")
 }
 
 func (c *Context) SetTraceId(traceId string) {
-	c.traceId = traceId
+	c.Context.Set("trace-id", traceId)
 }
 
-func GetContext(c *gin.Context) (*Context, bool) {
-	v, ok := c.Get(HttpRequestContextName)
-	if !ok {
-		return nil, false
+func (c *Context) ClientIP() string {
+	if v := c.Context.GetHeader("X-Real-Ip"); v != "" {
+		return v
 	}
-
-	ctx, ok := v.(*Context)
-	if !ok {
-		return nil, false
-	}
-
-	return ctx, true
+	return c.Context.ClientIP()
 }

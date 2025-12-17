@@ -152,6 +152,7 @@ func (rl *RateLimiter) Stop() {
 func RateLimitMiddleware(limiters []*RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := &Context{Context: c}
+		
 		for _, limiter := range limiters {
 			key := limiter.config.KeyFunc(ctx)
 			if !limiter.Allow(key) {

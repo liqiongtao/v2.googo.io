@@ -20,12 +20,10 @@ func TraceMiddleware(traceIdHeader string) gin.HandlerFunc {
 			traceId = uuid.New().String()
 		}
 
-		ctx := Context{Context: c}
+		ctx := &Context{Context: c}
 		ctx.SetTraceId(traceId)
 
-		c.Set(HttpRequestContextName, ctx)
 		c.Header(traceIdHeader, traceId)
-
 		c.Next()
 	}
 }

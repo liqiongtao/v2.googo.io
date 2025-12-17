@@ -177,19 +177,23 @@ func (w *encryptResponseWriter) release() {
 
 func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx := &Context{Context: c}
+
 		// 解密请求体
 		if c.Request.Body != nil && c.Request.ContentLength > 0 {
 			buf := getBuffer()
 			defer putBuffer(buf)
 
 			if _, err := io.Copy(buf, c.Request.Body); err != nil {
-				ErrorWithStatus(&Context{Context: c}, http.StatusBadRequest, 4001, "获取请求数据失败")
+				ErrorWithStatus(ctx, http.StatusBadRequest, 4001, "获取请求数据失败")
+				c.Abort()
 				return
 			}
 
 			decrypted, err := encryptor.Decrypt(buf.Bytes())
 			if err != nil {
-				ErrorWithStatus(&Context{Context: c}, http.StatusBadRequest, 4002, "获取请求数据失败")
+				ErrorWithStatus(ctx, http.StatusBadRequest, 4002, "解密请求数据失败")
+				c.Abort()
 				return
 			}
 
@@ -210,7 +214,6 @@ func EncryptMiddleware(encryptor Encryptor) gin.HandlerFunc {
 		// 刷新加密数据
 		if err := writer.flush(); err != nil {
 			// 如果刷新失败，记录错误但不中断请求
-			// todo:: 记录日志
 		}
 
 		// 释放资源
