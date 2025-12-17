@@ -1,6 +1,7 @@
 package goohttp
 
 import (
+	"bytes"
 	"encoding/json"
 	"sync"
 
@@ -12,13 +13,24 @@ const (
 	SuccessMessage = "success" // 成功消息
 )
 
-type ResponseHook func(ctx *Context, resp *Response)
-
 type Response struct {
 	Code    int    `json:"code,omitempty"`     // 业务状态码
 	Message string `json:"message,omitempty"`  // 响应消息
 	Data    any    `json:"data,omitempty"`     // 响应数据
 	TraceId string `json:"trace_id,omitempty"` // 追踪ID
+}
+
+func (r *Response) IsSuccess() bool {
+	return r.Code == SuccessCode
+}
+
+func (r *Response) Byte() []byte {
+	buf, _ := json.Marshal(r)
+	return buf
+}
+
+func (r *Response) String() string {
+	return string(r.Byte())
 }
 
 func Success(ctx *Context, data any) *Response {
@@ -57,25 +69,20 @@ func ErrorWithData(ctx *Context, code int, message string, data interface{}) *Re
 	}
 }
 
+type ResponseHook func(ctx *Context, resp *Response)
+
 // 响应钩子写入器
 type hookResponseWriter struct {
 	gin.ResponseWriter
-	Response *Response
-	mu       sync.Mutex
+	buffer *bytes.Buffer
+	mu     sync.Mutex
 }
 
 func (w *hookResponseWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if err := json.Unmarshal(data, w.Response); err != nil {
-		w.Response = &Response{
-			Code:    SuccessCode,
-			Message: SuccessMessage,
-			Data:    string(data),
-		}
-	}
-
+	w.buffer.Write(data)
 	return w.ResponseWriter.Write(data)
 }
 
@@ -89,15 +96,20 @@ func ResponseHookMiddleware(hooks []ResponseHook) gin.HandlerFunc {
 
 		writer := &hookResponseWriter{
 			ResponseWriter: c.Writer,
-			Response:       &Response{},
+			buffer:         &bytes.Buffer{},
 		}
 
 		c.Writer = writer
 
 		c.Next()
 
+		var rsp *Response
+		if err := json.Unmarshal(writer.buffer.Bytes(), &rsp); err != nil {
+			rsp = Error(ctx, 5001, err.Error())
+		}
+
 		for _, hook := range hooks {
-			hook(ctx, writer.Response)
+			hook(ctx, rsp)
 		}
 	}
 }
